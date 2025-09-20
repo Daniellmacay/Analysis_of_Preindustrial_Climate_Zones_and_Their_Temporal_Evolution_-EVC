@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Análisis Climático 3D Interactivo</title>
+    
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
+
+    <style>
+        html, body, #cesiumContainer {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            font-family: sans-serif; overflow: hidden; background-color: #000;
+        }
+        .control-panel {
+            position: absolute; top: 10px; z-index: 1000;
+            background: rgba(40, 40, 40, 0.85); color: white;
+            padding: 15px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            max-height: 95%; overflow-y: auto;
+            transition: all 0.3s ease-in-out; 
+        }
+        #controls { left: 10px; width: 300px; }
+        #svdPlotContainer {
+            right: 10px; width: 320px;
+            display: none; 
+        }
+        #svdPlotContainer.maximized {
+            width: 95vw;
+            height: 95vh;
+            top: 2.5vh;
+            left: 2.5vw;
+            z-index: 2000;
+        }
+        h3, label { margin-top: 0; }
+        label { font-weight: bold; margin-bottom: 5px; display: block; }
+        select, input { display: block; width: 100%; margin-bottom: 12px; box-sizing: border-box; }
+        button { width: 100%; padding: 8px; margin-top: 10px; cursor: pointer; }
+        hr { border-color: #555; margin: 15px 0; }
+        
+        #legend {
+            position: absolute; bottom: 20px; left: 10px; z-index: 1000;
+            background: rgba(40, 40, 40, 0.85); color: white;
+            padding: 10px; border-radius: 8px; font-size: 12px;
+        }
+        .color-bar {
+            width: 150px; height: 15px; margin-top: 5px;
+            background: linear-gradient(to right, blue, rgba(255, 255, 255, 0.1), red);
+        }
+        .labels { display: flex; justify-content: space-between; font-size: 10px; }
+        
+        .plot-container { padding: 10px; background: rgba(20, 20, 20, 0.9); border-radius: 5px; margin-top: 10px; }
+        .plot-container h4 {
+            margin-top: 0;
+            border-bottom: 1px solid #444;
+            padding-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .plot-container svg { width: 100%; height: auto; }
+        .toggle-plot-size-btn {
+            background: none; border: none; color: white;
+            font-size: 20px; cursor: pointer; padding: 0 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="cesiumContainer"></div>
+    
+    <div id="controls" class="control-panel">
+        <h3>Controles de Visualización</h3>
+        <label for="csvFile">1. Cargar Archivo Principal (.csv)</label>
+        <input type="file" id="csvFile" accept=".csv">
+        <div id="networkFileControls" style="display:none;">
+            <label for="edgesFile">Cargar Aristas (.csv)</label>
+            <input type="file" id="edgesFile" accept=".csv">
+        </div>
+        <label for="visualizationType">2. Seleccionar Visualización:</label>
+        <select id="visualizationType">
+            <option value="none">-- Cargar un archivo --</option>
+            <option value="pca" style="display:none;">Temperatura (SVD)</option>
+            <option value="som" style="display:none;">Clústeres (SOM)</option>
+            <option value="network" style="display:none;">Análisis de Red</option>
+        </select>
+        <div id="pcaControls" style="display: none;">
+            <label for="pcaModeSelector">Modo de Visualización:</label>
+            <select id="pcaModeSelector">
+                <option value="decades">Valores por Década</option>
+                <option value="spatial_modes">Modos Espaciales (Patrones)</option>
+            </select>
+            <div id="decadesView">
+                <label for="decadeSelector">Periodo:</label>
+                <select id="decadeSelector"></select>
+                <label for="amplitudeSlider">Amplitud de Visualización: <span id="amplitudeValue">0.0</span></label>
+                <input type="range" id="amplitudeSlider" min="0" max="1" step="0.01" value="0">
+            </div>
+            <div id="spatialModesView" style="display: none;">
+                <label>Tipo de Análisis Espacial:</label>
+                <input type="radio" id="modeGlobal" name="spatialModeType" value="global" checked>
+                <label for="modeGlobal" style="display: inline-block; font-weight: normal;">Visión Global (Simulada)</label><br>
+                <input type="radio" id="modeDecade" name="spatialModeType" value="decade">
+                <label for="modeDecade" style="display: inline-block; font-weight: normal;">Análisis por Década</label>
+                <div id="decadeSpecificControls" style="display:none;">
+                    <label for="spatialModeDecadeSelector">Seleccionar Década:</label>
+                    <select id="spatialModeDecadeSelector"></select>
+                </div>
+                <label for="spatialModeSelector">Seleccionar Modo (1-100):</label>
+                <select id="spatialModeSelector"></select>
+            </div>
+            <button id="toggleSvdPlotBtn">Mostrar/Ocultar Gráficas</button>
+        </div>
+        <div id="somControls" style="display: none;">
+            <label for="somClusterSelector">Filtrar por Grupo SOM:</label>
+            <select id="somClusterSelector"></select>
+        </div>
+        <hr>
+        <label for="geojsonFile">3. Cargar Regiones (GeoJSON)</label>
+        <input type="file" id="geojsonFile" accept=".geojson,.json">
+        <button id="toggleBaseLayerBtn">Apagar/Encender Mapa Base</button>
+    </div>
+
+    <div id="svdPlotContainer" class="control-panel">
+        <div id="logLogPlot" class="plot-container">
+            <h4 id="plotTitleWrapper">
+                <span id="plotTitle">Scree Plot (Log-Log)</span>
+                <button id="togglePlotSizeBtn" class="toggle-plot-size-btn" title="Maximizar / Minimizar Gráfica">&#9974;</button>
+            </h4>
+            <div style="font-size: 12px; margin-bottom: 10px;">
+                <label style="font-weight:normal;"><input type="radio" name="plotViewType" value="single" checked> Vista por Década</label>
+                <label style="font-weight:normal;"><input type="radio" name="plotViewType" value="all"> Vista Comparativa (Todas)</label>
+            </div>
+            <div id="graphDecadeSelectorContainer">
+                <label for="graphDecadeSelector" style="font-weight:normal; font-size: 12px;">Seleccionar Década:</label>
+                <select id="graphDecadeSelector"></select>
+            </div>
+            <svg id="logLogPlotSvg"></svg>
+        </div>
+
+        <div id="temporalModePlot" class="plot-container" style="display: none;">
+            <h4>Perfil Temporal del Modo</h4>
+            <svg id="temporalModePlotSvg"></svg>
+        </div>
+    </div>
+
+    <div id="legend" style="display: none;">
+        <strong>Anomalía de Temperatura</strong>
+        <div class="color-bar"></div>
+        <div class="labels">
+            <span>Frío</span><span>Neutro</span><span>Cálido</span>
+        </div>
+    </div>
+    
+    <script>
+        // === CONFIGURACIÓN INICIAL ===
+        // Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIyNDE3NjFjMy03ZmNlLTRjNmItOGYzMC05Y2I1YmY2ZGI3NjYiLCJpZCI6MzMwMzc2LCJpYXQiOjE3NTY3NTA4MjV9.LcZwospuKIuQxSopfU9pk2DfHci5oN1HaYNptFpMwQk',
+        const viewer = new Cesium.Viewer('cesiumContainer', {
+            terrain: Cesium.Terrain.fromWorldTerrain(),
+            infoBox: false, selectionIndicator: false, sceneModePicker: true
+        });
+        viewer.scene.backgroundColor = Cesium.Color.BLACK;
+
+        // === VARIABLES GLOBALES ===
+        let mainData = [], networkEdges = [], geojsonLayer = null;
+        let svdDataByDecade = {}; 
+        let tempColumns = [];
+        let maxSomCluster = 1;
+        const baseLayer = viewer.imageryLayers.get(0);
+
+        // === ESCALAS DE COLOR ===
+        const pcaColorScale = d3.scaleLinear().domain([-1, 0, 1]).range(["blue", "rgba(255, 255, 255, 0.1)", "red"]);
+        const getSomColor = (clusterId) => Cesium.Color.fromHsl((clusterId - 1) / (maxSomCluster - 1), 0.9, 0.6);
+        const getNodeById = (id) => mainData.find(d => d.id === id);
+
+        // === FUNCIONES DE VISUALIZACIÓN ===
+        function updateVisualization() {
+            viewer.entities.removeAll();
+            const vizType = document.getElementById('visualizationType').value;
+            if (!mainData.length || vizType === 'none') return;
+            switch(vizType) {
+                case 'pca': visualizePCA(); break;
+                case 'som': visualizeSOM(); break;
+                case 'network': visualizeNetwork(); break;
+            }
+        }
+
+        function visualizePCA() {
+            const mode = document.getElementById('pcaModeSelector').value;
+            const maxHeight = 400000.0;
+            if (mode === 'decades') {
+                const selectedDecade = document.getElementById('decadeSelector').value;
+                if(!selectedDecade) return;
+                const amplitude = parseFloat(document.getElementById('amplitudeSlider').value);
+                const maxAbsValue = d3.max(mainData, d => Math.abs(d[selectedDecade])) || 1.0;
+                mainData.forEach(d => {
+                    const value = d[selectedDecade] || 0;
+                    if (Math.abs(value) < (amplitude * maxAbsValue)) return;
+                    const normalizedValue = value / maxAbsValue;
+                    const color = Cesium.Color.fromCssColorString(pcaColorScale(normalizedValue));
+                    const height = Math.abs(normalizedValue * maxHeight) + 1000.0;
+                    viewer.entities.add({
+                        position: Cesium.Cartesian3.fromDegrees(d.lon, d.lat),
+                        box: { dimensions: new Cesium.Cartesian3(80000.0, 80000.0, height), material: color }
+                    });
+                });
+            } else if (mode === 'spatial_modes') {
+                const analysisType = document.querySelector('input[name="spatialModeType"]:checked').value;
+                const selectedModeIndex = parseInt(document.getElementById('spatialModeSelector').value) - 1;
+                let spatialModeVector;
+                if (analysisType === 'decade') {
+                    const selectedDecade = document.getElementById('spatialModeDecadeSelector').value;
+                    const svdForDecade = svdDataByDecade[selectedDecade];
+                    if (!svdForDecade || !svdForDecade.U || selectedModeIndex >= svdForDecade.U[0].length) return;
+                    spatialModeVector = svdForDecade.U.map(row => row[selectedModeIndex]);
+                } else { 
+                    const svdGlobal = svdDataByDecade['global'];
+                     if (!svdGlobal || !svdGlobal.U || selectedModeIndex >= svdGlobal.U[0].length) return;
+                    spatialModeVector = svdGlobal.U.map(row => row[selectedModeIndex]);
+                }
+                if (!spatialModeVector) return;
+                const maxAbsValue = d3.max(spatialModeVector, d => Math.abs(d)) || 1.0;
+                mainData.forEach((d, i) => {
+                    const value = spatialModeVector[i] || 0;
+                    const normalizedValue = value / maxAbsValue;
+                    const color = Cesium.Color.fromCssColorString(pcaColorScale(normalizedValue));
+                    const height = Math.abs(normalizedValue * maxHeight) + 1000.0;
+                    viewer.entities.add({
+                        position: Cesium.Cartesian3.fromDegrees(d.lon, d.lat),
+                        box: { dimensions: new Cesium.Cartesian3(80000.0, 80000.0, height), material: color }
+                    });
+                });
+            }
+        }
+        
+        function visualizeSOM() {
+            const filterCluster = document.getElementById('somClusterSelector').value;
+            const isFiltered = filterCluster !== 'all';
+            const filteredData = isFiltered ? mainData.filter(d => d.som_cluster == filterCluster) : mainData;
+            filteredData.forEach(d => {
+                const value = d.som_cluster;
+                if (typeof value === 'undefined') return;
+                viewer.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(d.lon, d.lat),
+                    box: { dimensions: new Cesium.Cartesian3(40000.0, 40000.0, 40000.0), material: getSomColor(value) }
+                });
+            });
+            if(isFiltered && filteredData.length > 0) {
+                const avgLon = d3.mean(filteredData, d => d.lon);
+                const avgLat = d3.mean(filteredData, d => d.lat);
+                if(isFinite(avgLon) && isFinite(avgLat)) {
+                    viewer.camera.flyTo({
+                        destination: Cesium.Cartesian3.fromDegrees(avgLon, avgLat, 1500000), 
+                        duration: 2.0
+                    });
+                }
+            }
+        }
+        
+        function visualizeNetwork() {
+            if (networkEdges.length === 0) { alert('Por favor, carga también el archivo de Aristas para visualizar la red.'); }
+            mainData.forEach(d => {
+                let nodeColor;
+                try { nodeColor = Cesium.Color.fromCssColorString(d.categoria) || Cesium.Color.ORANGE; } 
+                catch (e) { nodeColor = Cesium.Color.ORANGE; }
+                viewer.entities.add({
+                    position: Cesium.Cartesian3.fromDegrees(d.lon, d.lat),
+                    point: { pixelSize: 10, color: nodeColor, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+                    name: `Nodo: ${d.id}`
+                });
+            });
+            networkEdges.forEach(edge => {
+                const sourceNode = getNodeById(edge.source);
+                const targetNode = getNodeById(edge.target);
+                if (sourceNode && targetNode) {
+                    viewer.entities.add({
+                        polyline: {
+                            positions: Cesium.Cartesian3.fromDegreesArray([sourceNode.lon, sourceNode.lat, targetNode.lon, targetNode.lat]),
+                            width: 2,
+                            depthFailMaterial: Cesium.Color.WHITE.withAlpha(0.2),
+                            material: Cesium.Color.WHITE.withAlpha(0.7)
+                        },
+                        name: `Arista de ${edge.source} a ${edge.target}`
+                    });
+                }
+            });
+        }
+        
+        // --- FUNCIÓN MODIFICADA ---
+        function performSVDAnalysis(data) {
+            svdDataByDecade = {};
+            const numPoints = data.length;
+            const numModes = 100;
+            const numDecades = tempColumns.length;
+
+            tempColumns.forEach(decade => {
+                const singularValues = Array.from({length: numModes}, (_, i) => 100 * Math.exp(-i / 10) * (0.8 + Math.random() * 0.4));
+                svdDataByDecade[decade] = {
+                    D: singularValues,
+                    U: Array.from({length: numPoints}, () => Array.from({length: numModes}, () => Math.random() * 2 - 1)),
+                    V: Array.from({length: numDecades}, () => Array.from({length: numModes}, () => Math.random() * 2 - 1)) // <-- NUEVO: Simulación de V
+                };
+            });
+
+            // Simulación más realista para la Visión Global
+            const globalV = [];
+            for(let i=0; i < numDecades; i++){
+                const row = [
+                    (i / (numDecades - 1)) * 2 - 1, // Modo 1: Tendencia lineal (calentamiento)
+                    Math.sin(i * Math.PI * 2 / numDecades), // Modo 2: Patrón oscilatorio
+                    Math.exp(-Math.pow(i - numDecades/2, 2) / 8) * 2 - 1 // Modo 3: Pico en el centro
+                ];
+                globalV.push(row);
+            }
+
+            svdDataByDecade['global'] = {
+                D: [100, 50, 20],
+                U: Array.from({length: numPoints}, () => Array.from({length: 3}, () => Math.random() * 2 - 1)),
+                V: globalV // <-- NUEVO: Usando la V simulada
+            };
+
+            if (tempColumns.length > 0) {
+                drawLogLogPlot(tempColumns[0]);
+            }
+        }
+        
+        function drawLogLogPlot(highlightDecade) {
+            const plotViewType = document.querySelector('input[name="plotViewType"]:checked').value;
+            const decadeToHighlight = highlightDecade || document.getElementById('graphDecadeSelector').value;
+
+            const plotContainerEl = document.getElementById('logLogPlot');
+            const svg = d3.select("#logLogPlotSvg");
+            svg.selectAll("*").remove();
+
+            const containerWidth = parseInt(window.getComputedStyle(plotContainerEl).width);
+            if (isNaN(containerWidth) || containerWidth <= 0) { return; }
+
+            const margin = {top: 10, right: 20, bottom: 40, left: 50};
+            const width = containerWidth - margin.left - margin.right;
+            const height = 150; // Altura fija para consistencia
+
+            const g = svg.attr("width", width + margin.left + margin.right)
+                         .attr("height", height + margin.top + margin.bottom)
+                         .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+            
+            const allSingularValues = [].concat(...Object.values(svdDataByDecade).map(d => d.D)).filter(d => d > 0);
+            if (allSingularValues.length === 0) return;
+
+            const x = d3.scaleLog().domain([1, 100]).range([0, width]);
+            const y = d3.scaleLog().domain(d3.extent(allSingularValues)).range([height, 0]);
+
+            g.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x).ticks(3, ".0s"));
+            g.append("g").call(d3.axisLeft(y).ticks(4, ".1s"));
+            
+            g.append("text").attr("x", width / 2).attr("y", height + 35).style("text-anchor", "middle").text("Log10 (Orden del Componente)").attr("fill", "white").style("font-size", "10px");
+            g.append("text").attr("transform", "rotate(-90)").attr("y", -40).attr("x", -height / 2).style("text-anchor", "middle").text("Log10 (Valor Singular)").attr("fill", "white").style("font-size", "10px");
+
+            if (plotViewType === 'single') {
+                document.getElementById('plotTitle').textContent = `Scree Plot para Década de ${decadeToHighlight.replace('temp_', '')}`;
+                const decadeData = svdDataByDecade[decadeToHighlight];
+                if (!decadeData) return;
+                const plotData = decadeData.D.map((d, i) => ({mode: i + 1, value: d})).filter(d => d.value > 0);
+                const line = d3.line().x(d => x(d.mode)).y(d => y(d.value));
+                g.append("path").datum(plotData)
+                 .attr("fill", "none").attr("stroke", "steelblue").attr("stroke-width", 2).attr("d", line);
+            } else { 
+                document.getElementById('plotTitle').textContent = `Scree Plot Comparativo por Década`;
+                const colors = d3.scaleOrdinal(d3.schemeTableau10);
+                tempColumns.forEach(decade => {
+                    const decadeData = svdDataByDecade[decade].D.map((d, i) => ({mode: i + 1, value: d})).filter(d => d.value > 0);
+                    const line = d3.line().x(d => x(d.mode)).y(d => y(d.value));
+                    g.append("path").datum(decadeData)
+                     .attr("fill", "none")
+                     .attr("stroke", colors(decade))
+                     .attr("stroke-width", decade === decadeToHighlight ? 3 : 1.5)
+                     .attr("stroke-opacity", decade === decadeToHighlight ? 1.0 : 0.3)
+                     .attr("d", line);
+                });
+            }
+        }
+        
+        // --- FUNCIÓN COMPLETAMENTE NUEVA ---
+        function drawTemporalModePlot(modeIndex) {
+            if (modeIndex < 0 || !tempColumns.length) return;
+
+            const analysisType = document.querySelector('input[name="spatialModeType"]:checked').value;
+            let svdSource = svdDataByDecade['global']; // Default a global
+            if (analysisType === 'decade') {
+                const selectedDecade = document.getElementById('spatialModeDecadeSelector').value;
+                svdSource = svdDataByDecade[selectedDecade];
+            }
+            if (!svdSource || !svdSource.V || modeIndex >= svdSource.V[0].length) return;
+
+            const temporalProfile = svdSource.V.map(row => row[modeIndex]);
+            
+            const plotContainerEl = document.getElementById('temporalModePlot');
+            const svg = d3.select("#temporalModePlotSvg");
+            svg.selectAll("*").remove();
+            
+            const containerWidth = parseInt(window.getComputedStyle(plotContainerEl).width);
+            if (isNaN(containerWidth) || containerWidth <= 0) return;
+
+            const margin = {top: 10, right: 20, bottom: 40, left: 50};
+            const width = containerWidth - margin.left - margin.right;
+            const height = 150;
+
+            const g = svg.attr("width", width + margin.left + margin.right)
+                         .attr("height", height + margin.top + margin.bottom)
+                         .append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+            
+            const x = d3.scalePoint()
+                        .domain(tempColumns.map(d => d.replace('temp_', '')))
+                        .range([0, width]);
+            
+            const y = d3.scaleLinear()
+                        .domain(d3.extent(temporalProfile))
+                        .range([height, 0]);
+
+            g.append("g")
+             .attr("transform", `translate(0,${height})`)
+             .call(d3.axisBottom(x))
+             .selectAll("text")
+             .style("text-anchor", "end")
+             .attr("dx", "-.8em")
+             .attr("dy", ".15em")
+             .attr("transform", "rotate(-45)");
+
+            g.append("g").call(d3.axisLeft(y).ticks(5));
+
+            g.append("text").attr("x", width / 2).attr("y", height + 38).style("text-anchor", "middle").text("Década").attr("fill", "white").style("font-size", "10px");
+            g.append("text").attr("transform", "rotate(-90)").attr("y", -35).attr("x", -height / 2).style("text-anchor", "middle").text("Amplitud").attr("fill", "white").style("font-size", "10px");
+
+            const line = d3.line()
+                .x((d, i) => x(tempColumns[i].replace('temp_', '')))
+                .y(d => y(d));
+
+            g.append("path")
+                .datum(temporalProfile)
+                .attr("fill", "none")
+                .attr("stroke", "lime")
+                .attr("stroke-width", 2)
+                .attr("d", line);
+        }
+
+
+        // === MANEJO DE LA INTERFAZ DE USUARIO (UI) ===
+        function setupUIListeners() {
+            const vizSelector = document.getElementById('visualizationType');
+            
+            vizSelector.addEventListener('change', () => {
+                const hideAllControlPanels = () => {
+                    document.querySelectorAll('#controls > div:not([id="networkFileControls"])').forEach(div => div.style.display = 'none');
+                    document.getElementById('legend').style.display = 'none';
+                    document.getElementById('svdPlotContainer').style.display = 'none';
+                    document.getElementById('networkFileControls').style.display = 'none';
+                };
+                hideAllControlPanels();
+                const vizType = vizSelector.value;
+                if (document.getElementById(`${vizType}Controls`)) {
+                    document.getElementById(`${vizType}Controls`).style.display = 'block';
+                }
+                if (vizType === 'network') {
+                    document.getElementById('networkFileControls').style.display = 'block';
+                }
+                if (vizType === 'pca') {
+                    document.getElementById('legend').style.display = 'block';
+                    document.getElementById('svdPlotContainer').style.display = 'block';
+                    if(tempColumns.length > 0) {
+                        drawLogLogPlot();
+                        // Dibuja la gráfica temporal si estamos en la vista correcta
+                        if (document.getElementById('pcaModeSelector').value === 'spatial_modes') {
+                            const currentMode = document.getElementById('spatialModeSelector').value - 1;
+                            drawTemporalModePlot(currentMode);
+                        }
+                    }
+                }
+                updateVisualization();
+            });
+            
+            // --- LISTENER MODIFICADO ---
+            document.getElementById('pcaModeSelector').addEventListener('change', (e) => {
+                const isDecades = e.target.value === 'decades';
+                document.getElementById('decadesView').style.display = isDecades ? 'block' : 'none';
+                document.getElementById('spatialModesView').style.display = isDecades ? 'none' : 'block';
+                
+                // Muestra u oculta la gráfica de perfil temporal
+                const temporalPlot = document.getElementById('temporalModePlot');
+                temporalPlot.style.display = isDecades ? 'none' : 'block';
+
+                if (!isDecades) {
+                    const currentMode = document.getElementById('spatialModeSelector').value - 1;
+                    drawTemporalModePlot(currentMode);
+                }
+                updateVisualization();
+            });
+            
+            document.querySelectorAll('input[name="spatialModeType"]').forEach(radio => {
+                radio.addEventListener('change', (e) => {
+                    const showDecadeControls = e.target.value === 'decade';
+                    document.getElementById('decadeSpecificControls').style.display = showDecadeControls ? 'block' : 'none';
+                    const modeSelector = document.getElementById('spatialModeSelector');
+                    if (showDecadeControls) {
+                        modeSelector.innerHTML = Array.from({length: 100}, (_, i) => `<option value="${i+1}">Modo ${i+1}</option>`).join('');
+                    } else {
+                        modeSelector.innerHTML = Array.from({length: 3}, (_, i) => `<option value="${i+1}">Modo ${i+1}</option>`).join('');
+                    }
+                    // Actualiza la gráfica temporal al cambiar el tipo de análisis
+                    drawTemporalModePlot(modeSelector.value - 1);
+                    updateVisualization();
+                });
+            });
+
+            document.getElementById('graphDecadeSelector').addEventListener('change', (e) => {
+                drawLogLogPlot(e.target.value);
+            });
+            
+            document.querySelectorAll('input[name="plotViewType"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    drawLogLogPlot();
+                });
+            });
+
+            // --- LISTENER MODIFICADO ---
+            // Se movió la lógica del 'spatialModeSelector' a un listener separado para mayor claridad
+            document.getElementById('spatialModeSelector').addEventListener('input', () => {
+                drawTemporalModePlot(document.getElementById('spatialModeSelector').value - 1);
+                updateVisualization();
+            });
+
+            ['decadeSelector', 'amplitudeSlider', 'somClusterSelector', 'spatialModeDecadeSelector'].forEach(id => {
+                document.getElementById(id).addEventListener('input', updateVisualization);
+            });
+            
+            document.getElementById('amplitudeSlider').addEventListener('input', (e) => {
+                document.getElementById('amplitudeValue').textContent = parseFloat(e.target.value).toFixed(2);
+            });
+            
+            document.getElementById('toggleBaseLayerBtn').addEventListener('click', () => { baseLayer.show = !baseLayer.show; });
+
+            document.getElementById('toggleSvdPlotBtn').addEventListener('click', (e) => {
+                const plotContainer = document.getElementById('svdPlotContainer');
+                const isHidden = plotContainer.style.display === 'none';
+                plotContainer.style.display = isHidden ? 'block' : 'none';
+                if(isHidden && tempColumns.length > 0){
+                    drawLogLogPlot();
+                     if (document.getElementById('pcaModeSelector').value === 'spatial_modes') {
+                        const currentMode = document.getElementById('spatialModeSelector').value - 1;
+                        drawTemporalModePlot(currentMode);
+                    }
+                }
+            });
+            
+            document.getElementById('togglePlotSizeBtn').addEventListener('click', () => {
+                const plotContainer = document.getElementById('svdPlotContainer');
+                const btn = document.getElementById('togglePlotSizeBtn');
+                plotContainer.classList.toggle('maximized');
+                if (plotContainer.classList.contains('maximized')) {
+                    btn.innerHTML = '&#10006;'; 
+                    btn.title = 'Minimizar Gráfica';
+                } else {
+                    btn.innerHTML = '&#9974;'; 
+                    btn.title = 'Maximizar Gráfica';
+                }
+                // Redibuja ambas gráficas después de la transición CSS
+                setTimeout(() => {
+                    drawLogLogPlot();
+                    if (document.getElementById('pcaModeSelector').value === 'spatial_modes') {
+                       const currentMode = document.getElementById('spatialModeSelector').value - 1;
+                       drawTemporalModePlot(currentMode);
+                    }
+                }, 300);
+            });
+
+            document.getElementById('geojsonFile').addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    if (geojsonLayer) viewer.dataSources.remove(geojsonLayer, true);
+                    try {
+                        const geojsonData = JSON.parse(e.target.result);
+                        Cesium.GeoJsonDataSource.load(geojsonData, {
+                            stroke: Cesium.Color.YELLOW.withAlpha(0.8), fill: Cesium.Color.YELLOW.withAlpha(0.1), strokeWidth: 2
+                        }).then(dataSource => {
+                            geojsonLayer = dataSource;
+                            viewer.dataSources.add(dataSource);
+                        }).catch(error => {
+                            console.error("Error al cargar GeoJSON en Cesium:", error);
+                            alert("Error al procesar el archivo GeoJSON.");
+                        });
+                    } catch (error) {
+                         console.error("Error al parsear el archivo GeoJSON:", error);
+                         alert("El archivo no parece ser un GeoJSON válido.");
+                    }
+                };
+                reader.readAsText(file);
+            });
+            
+            document.getElementById('csvFile').addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    mainData = d3.csvParse(e.target.result, d3.autoType);
+                    const columns = Object.keys(mainData[0]);
+                    
+                    vizSelector.value = 'none';
+                    Array.from(vizSelector.options).forEach(opt => { if (opt.value !== 'none') opt.style.display = 'none'; });
+
+                    let firstOption = 'none';
+                    tempColumns = columns.filter(name => name.startsWith('temp_')).sort(); // <-- Añadido .sort()
+                    if (tempColumns.length > 0) {
+                        document.querySelector('option[value="pca"]').style.display = 'block';
+                        const decadeOptions = tempColumns.map(col => `<option value="${col}">${col.replace('temp_', '')}</option>`).join('');
+                        document.getElementById('decadeSelector').innerHTML = decadeOptions;
+                        document.getElementById('spatialModeDecadeSelector').innerHTML = decadeOptions;
+                        document.getElementById('graphDecadeSelector').innerHTML = decadeOptions;
+                        performSVDAnalysis(mainData);
+                        if (firstOption === 'none') firstOption = 'pca';
+                    }
+                    if (columns.includes('som_cluster')) {
+                        document.querySelector('option[value="som"]').style.display = 'block';
+                        const clusters = [...new Set(mainData.map(d => d.som_cluster))].sort((a, b) => a - b);
+                        maxSomCluster = d3.max(clusters) || 1;
+                        document.getElementById('somClusterSelector').innerHTML = '<option value="all">-- Todos los Grupos --</option>' + clusters.map(c => `<option value="${c}">Grupo ${c}</option>`).join('');
+                        if (firstOption === 'none') firstOption = 'som';
+                    }
+                    if (columns.includes('id') && columns.includes('lat')) {
+                        document.querySelector('option[value="network"]').style.display = 'block';
+                        if (firstOption === 'none') firstOption = 'network';
+                    }
+                    document.getElementById('spatialModeSelector').innerHTML = Array.from({length: 3}, (_, i) => `<option value="${i+1}">Modo ${i+1}</option>`).join('');
+                    vizSelector.value = firstOption;
+                    vizSelector.dispatchEvent(new Event('change'));
+                };
+                reader.readAsText(file);
+            });
+
+            document.getElementById('edgesFile').addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    networkEdges = d3.csvParse(e.target.result, d3.autoType);
+                    if (document.getElementById('visualizationType').value === 'network') {
+                        updateVisualization();
+                    }
+                };
+                reader.readAsText(file);
+            });
+        }
+        
+        setupUIListeners();
+    </script>
+</body>
+</html>
