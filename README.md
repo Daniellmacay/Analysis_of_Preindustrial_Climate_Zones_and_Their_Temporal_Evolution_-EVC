@@ -71,7 +71,7 @@ El análisis confirma una tendencia de calentamiento global generalizada, pero d
 ## Visualizador Interactivo
 
 Para una exploración interactiva de los resultados, abre el archivo `Gis_Cesium.html` (ubicado en la carpeta `/visor_html/`) en un navegador web.
-Se recomienda usar un servidor local para evitar problemas de seguridad del navegador (CORS).
+Se recomienda usar un servidor local.
 
 El visor permite:
 * Visualizar los puntos de datos coloreados por clúster SOM o por la magnitud de sus patrones PCA.
